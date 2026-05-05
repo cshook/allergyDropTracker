@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+web-build/
+dist/
+
+# Build artifacts
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# OS
+.DS_Store
+
+# Credentials / certs
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Merge artifacts
+*.orig.*
+
+# Local Claude context (personal notes, not shared)
+CLAUDE.local.md
