@@ -388,6 +388,11 @@ export default function HomeScreen() {
   const today = storageTodayKey();
   const todayLog = data.log?.[today];
   const allChecked = checked.every(Boolean);
+  const hour = new Date().getHours();
+  const friendlyName = data.userName ? ` ${data.userName.split(' ')[0]}` : '';
+  
+  const greeting = hour < 12 ? `Good Morning${friendlyName}` : hour < 17 ? `Good Afternoon${friendlyName}` : `Good Evening${friendlyName}`;
+
 
   // Week 10 order reminder banner
   const showWeek10Banner = !data.orderReminders?.week10CheckDone &&
@@ -395,7 +400,7 @@ export default function HomeScreen() {
 
   return (
     <ScrollView style={s.container} contentContainerStyle={s.content}>
-
+      <View><Text style={s.greeting}>{greeting}</Text></View>
       {/* Dose Info Card */}
       <View style={s.card}>
         <Text style={s.cardLabel}>TODAY'S DOSE</Text>
@@ -416,6 +421,13 @@ export default function HomeScreen() {
           </View>
         </View>
       </View>
+
+      {/* TODO: Dose progress bar
+           Build-up: {currentSet} [■■■□□□□] {nextSet} — 7-dose increments
+             - Set labels: same display logic as onboarding; Set 4 next = "Maintenance"
+           Maintenance: [■■■□□□□□] Reorder — 8-week increments, no left label
+             - Right label: "Reorder" → "Reordered" (when week10CheckDone) → resets on new dosage sheet
+      */}
 
       {/* Week 10 reorder banner */}
       {showWeek10Banner && (
@@ -658,6 +670,8 @@ const s = StyleSheet.create({
   cardLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 1.2, color: '#aaa', marginBottom: 12 },
   cardTitle: { fontSize: 17, fontWeight: '700', color: '#222', marginBottom: 4 },
   cardSub: { fontSize: 13, color: '#888', marginBottom: 16 },
+
+  greeting: { fontSize: 17, fontWeight: '700', color: '#000', marginBottom: 4 },
 
   // Dose stat row
   doseRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center' },

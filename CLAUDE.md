@@ -129,8 +129,11 @@ Verified colors:
 1. **SettingsScreen** — doctor name, DOB, dosage sheet date, set colors not editable post-onboarding.
 2. **ScheduleScreen** — MD switch logic (gated: ≥1 complete Set #4 cycle) and Set #4 continuation past week 14.
 3. **New Dosage Sheet wizard** — "Start New Dosage Sheet" on Home is a placeholder Alert.
-4. **Home greeting** — `userName` stored but not displayed on HomeScreen.
+4. **~~Home greeting~~** — done.
 5. **Historical PDF export** — exports entire log as one sheet; needs per-sheet selection when multiple sheets exist.
+6. **HomeScreen dose progress bar** — sits below the dose info card.
+   - **Build-up:** `{currentSet} [■■■□□□□] {nextSet}` — 7-dose increments. Set labels use same display logic as onboarding (numeric set IDs, Set 4's next label = "Maintenance").
+   - **Maintenance:** `[■■■□□□□□] Reorder` — 8-week increments, no left label. Right label reads "Reorder" until `week10CheckDone` is true, then "Reordered" until a new dosage sheet is started.
 
 ## Known Issues
 - `autoCapitalize="words"` may be ignored by some Android keyboards — Android limitation, not a code bug

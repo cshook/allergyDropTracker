@@ -60,8 +60,7 @@ function calcStartDateFromWizard(ws) {
   }
   const totalCalendarDays = (completedWeekCount * 7) + (ws.partialDays || 0) + (ws.skips?.length || 0);
   if (totalCalendarDays === 0) return dateKey(localToday());
-  const lastDoseDateStr = ws.todayDoseTaken ? dateKey(localToday()) : addDays(dateKey(localToday()), -1);
-  return addDays(lastDoseDateStr, -(totalCalendarDays - 1));
+  return addDays(dateKey(localToday()), -totalCalendarDays);
 }
 
 function initWizardState() {
