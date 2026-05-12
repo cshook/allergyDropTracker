@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  ScrollView, Alert, Animated, AppState, ToastAndroid, TextInput,
+  ScrollView, Alert, Animated, AppState, ToastAndroid, TextInput, Platform,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Notifications from 'expo-notifications';
-import { loadData, saveData, todayKey as storageTodayKey } from '../utils/storage';
+import { loadData, saveData, todayKey as storageTodayKey, BUILDUP_SETS } from '../utils/storage';
 
 // Show notifications even when app is foregrounded
 Notifications.setNotificationHandler({
@@ -41,6 +42,9 @@ export default function HomeScreen() {
   const [quickLogStatus, setQuickLogStatus] = useState('taken');
   const [quickLogNotes, setQuickLogNotes] = useState('');
   const [quickLogReaction, setQuickLogReaction] = useState(false);
+  const [sheetDrops, setSheetDrops] = useState(2);
+  const [sheetDate, setSheetDate] = useState('');
+  const [sheetDatePickerOpen, setSheetDatePickerOpen] = useState(false);
   const timerRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const t2StartRef = useRef(null);      // epoch ms when t2 started
@@ -147,7 +151,7 @@ export default function HomeScreen() {
   function getDropCount() {
     if (!data) return 0;
     if (data.currentSet === 5) return data.maintenanceDrops;
-    return data.currentWeek; // week 1 = 1 drop, week 2 = 2, week 3 = 3
+    return Math.min(data.currentWeek, 3); // continuation weeks 4+ stay at 3 drops
   }
 
   function startChecklist() {
@@ -163,13 +167,13 @@ export default function HomeScreen() {
     // Pre-schedule t2 completion notification
     Notifications.scheduleNotificationAsync({
       content: { title: '✅ Hold time complete', body: 'Starting 30-minute monitoring period — no food or drink.', sound: true },
-      trigger: { seconds: 120 },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 120 },
     }).then(id => { t2NotifIdRef.current = id; });
     // Pre-schedule t30 completion at t2Start + 32 min so it fires correctly even if both
     // phases are backgrounded — startT30 will reuse this ID instead of scheduling a new one
     Notifications.scheduleNotificationAsync({
       content: { title: '💊 Dose complete!', body: "Monitoring period over — you're all done for today.", sound: true },
-      trigger: { seconds: 1920 },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 1920 },
     }).then(id => { t30NotifIdRef.current = id; });
     let rem = 120;
     timerRef.current = setInterval(() => {
@@ -211,7 +215,7 @@ export default function HomeScreen() {
     if (!t30NotifIdRef.current) {
       Notifications.scheduleNotificationAsync({
         content: { title: '💊 Dose complete!', body: "Monitoring period over — you're all done for today.", sound: true },
-        trigger: { seconds: startRem },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: startRem },
       }).then(id => { t30NotifIdRef.current = id; });
     }
     let rem = startRem;
@@ -312,6 +316,22 @@ export default function HomeScreen() {
     checkWeek9Reminder(updated);
   }
 
+  async function confirmNewSheet() {
+    const isMaintTransition = data.currentSet === 4;
+    const updated = {
+      ...data,
+      maintenanceDrops: sheetDrops,
+      dosageSheetDate: sheetDate,
+      ...(isMaintTransition
+        ? { currentSet: 5, currentWeek: 1 }
+        : { orderReminders: { week9Dismissed: false, week10CheckDone: false } }
+      ),
+    };
+    setData(updated);
+    await saveData(updated);
+    setFlow('idle');
+  }
+
   async function skipDose() {
     clearTimer();
     if (t30NotifIdRef.current) {
@@ -398,6 +418,18 @@ export default function HomeScreen() {
   const showWeek10Banner = !data.orderReminders?.week10CheckDone &&
     data.currentWeek === 1 && [4, 5].includes(data.currentSet);
 
+  // Progress bar
+  const isMaintenance = data.currentSet === 5;
+  const currentSetIdx = BUILDUP_SETS.indexOf(data.currentSet);
+  const progressSlots = isMaintenance ? 8 : 7;
+  const progressFilled = isMaintenance
+    ? Math.min(data.currentWeek - 1, 8)
+    : Math.min(Object.values(data.log || {}).filter(e => e.set === data.currentSet && e.week === data.currentWeek && (e.status === 'taken' || e.status === 'manual')).length, 7);
+  const progressLeftLabel = isMaintenance ? null : `Set ${data.currentSet}`;
+  const progressRightLabel = isMaintenance
+    ? (data.orderReminders?.week10CheckDone ? 'Reordered' : 'Reorder')
+    : (data.currentSet === 4 ? 'Maint.' : `Set ${BUILDUP_SETS[currentSetIdx + 1]}`);
+
   return (
     <ScrollView style={s.container} contentContainerStyle={s.content}>
       <View><Text style={s.greeting}>{greeting}</Text></View>
@@ -422,12 +454,20 @@ export default function HomeScreen() {
         </View>
       </View>
 
-      {/* TODO: Dose progress bar
-           Build-up: {currentSet} [■■■□□□□] {nextSet} — 7-dose increments
-             - Set labels: same display logic as onboarding; Set 4 next = "Maintenance"
-           Maintenance: [■■■□□□□□] Reorder — 8-week increments, no left label
-             - Right label: "Reorder" → "Reordered" (when week10CheckDone) → resets on new dosage sheet
-      */}
+      {/* Progress bar */}
+      <View style={s.card}>
+        <View style={s.progressRow}>
+          {progressLeftLabel
+            ? <Text style={s.progressLabel}>{progressLeftLabel}</Text>
+            : <View style={s.progressLabelSpacer} />}
+          <View style={s.progressTrack}>
+            {Array.from({ length: progressSlots }).map((_, i) => (
+              <View key={i} style={[s.progressSlot, i < progressFilled && s.progressSlotFilled]} />
+            ))}
+          </View>
+          <Text style={s.progressLabel}>{progressRightLabel}</Text>
+        </View>
+      </View>
 
       {/* Week 10 reorder banner */}
       {showWeek10Banner && (
@@ -478,11 +518,78 @@ export default function HomeScreen() {
           )}
         </View>
       )}
-      {/* New dosage sheet link — below idle card, always visible */}
-      {flow === 'idle' && (
-        <TouchableOpacity style={s.sheetLink} onPress={() => Alert.alert('New Dosage Sheet', 'Coming soon — will launch the new sheet wizard.')}>
+      {/* New dosage sheet link — visible after ≥1 week of Set 4 (build-up) or after reorder confirmed (maintenance) */}
+      {flow === 'idle' && ((data.currentSet === 4 && data.currentWeek >= 4) || (data.currentSet === 5 && data.orderReminders?.week10CheckDone)) && (
+        <TouchableOpacity style={s.sheetLink} onPress={() => {
+          setSheetDrops(data.maintenanceDrops || 2);
+          setSheetDate('');
+          setSheetDatePickerOpen(false);
+          setFlow('newSheet');
+        }}>
           <Text style={s.sheetLinkText}>+ Start New Dosage Sheet</Text>
         </TouchableOpacity>
+      )}
+
+      {/* ── NEW DOSAGE SHEET ── */}
+      {flow === 'newSheet' && (
+        <View style={s.card}>
+          <Text style={s.cardTitle}>
+            {data.currentSet === 4 ? 'Start Maintenance Phase' : 'New Dosage Sheet'}
+          </Text>
+          <Text style={s.cardSub}>
+            {data.currentSet === 4
+              ? 'Your maintenance drops have arrived. Confirm your schedule below.'
+              : 'Your replacement drops have arrived. Update your schedule below.'}
+          </Text>
+
+          <Text style={s.fieldLabel}>Drops per day</Text>
+          <View style={s.stepperRow}>
+            <TouchableOpacity style={s.stepperBtn} onPress={() => setSheetDrops(d => Math.max(1, d - 1))}>
+              <Text style={s.stepperBtnText}>−</Text>
+            </TouchableOpacity>
+            <Text style={s.stepperValue}>{sheetDrops}</Text>
+            <TouchableOpacity style={s.stepperBtn} onPress={() => setSheetDrops(d => Math.min(3, d + 1))}>
+              <Text style={s.stepperBtnText}>+</Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={s.fieldLabel}>Dosage sheet date</Text>
+          <TouchableOpacity style={s.datePill} onPress={() => setSheetDatePickerOpen(true)}>
+            <Text style={s.datePillText}>
+              {sheetDate
+                ? new Date(sheetDate + 'T00:00:00').toLocaleDateString()
+                : 'Select date'}
+            </Text>
+          </TouchableOpacity>
+          {sheetDatePickerOpen && (
+            <DateTimePicker
+              value={sheetDate ? new Date(sheetDate + 'T00:00:00') : new Date()}
+              mode="date"
+              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              maximumDate={new Date()}
+              onChange={(_, date) => {
+                setSheetDatePickerOpen(Platform.OS === 'ios');
+                if (date) {
+                  const d = date;
+                  setSheetDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+                }
+              }}
+            />
+          )}
+
+          <TouchableOpacity
+            style={[s.primaryBtn, !sheetDate && s.primaryBtnDisabled]}
+            onPress={confirmNewSheet}
+            disabled={!sheetDate}
+          >
+            <Text style={s.primaryBtnText}>
+              {data.currentSet === 4 ? 'Start Maintenance' : 'Save New Sheet'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={s.ghostBtn} onPress={() => setFlow('idle')}>
+            <Text style={s.ghostBtnText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
       )}
 
       {/* ── CHECKLIST ── */}
@@ -771,4 +878,29 @@ const s = StyleSheet.create({
   // New dosage sheet link — #1a3a6b on transparent = renders on #f0f4ff bg = 9.2:1 ✓
   sheetLink: { alignItems: 'center', paddingVertical: 10 },
   sheetLinkText: { color: '#1a3a6b', fontSize: 14, fontWeight: '600', textDecorationLine: 'underline' },
+
+  // New dosage sheet wizard
+  fieldLabel: { fontSize: 12, fontWeight: '700', color: '#aaa', letterSpacing: 0.6, marginBottom: 8, marginTop: 16 },
+  stepperRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  stepperBtn: {
+    width: 40, height: 40, borderRadius: 10,
+    borderWidth: 1.5, borderColor: BLUE,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  stepperBtnText: { color: BLUE, fontSize: 22, fontWeight: '700', lineHeight: 26 },
+  stepperValue: { fontSize: 24, fontWeight: '800', color: '#222', minWidth: 30, textAlign: 'center' },
+  datePill: {
+    borderWidth: 1.5, borderColor: '#ddd', borderRadius: 10,
+    paddingVertical: 12, paddingHorizontal: 16,
+    alignSelf: 'flex-start',
+  },
+  datePillText: { fontSize: 15, color: '#333', fontWeight: '500' },
+
+  // Progress bar
+  progressRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  progressTrack: { flex: 1, flexDirection: 'row', gap: 3 },
+  progressSlot: { flex: 1, height: 10, borderRadius: 5, backgroundColor: '#e8eeff' },
+  progressSlotFilled: { backgroundColor: BLUE },
+  progressLabel: { fontSize: 11, fontWeight: '700', color: '#aaa', minWidth: 40, textAlign: 'center' },
+  progressLabelSpacer: { minWidth: 40 },
 });

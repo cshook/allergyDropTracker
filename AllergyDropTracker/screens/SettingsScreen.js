@@ -1,25 +1,40 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  TextInput, Alert,
+  TextInput, Alert, Platform, Linking,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Notifications from 'expo-notifications';
 import * as Calendar from 'expo-calendar';
-import { loadData, saveData, getDefaultData } from '../utils/storage';
+import { useFocusEffect } from '@react-navigation/native';
+import { loadData, saveData, getDefaultData, formatDisplayDate } from '../utils/storage';
 
 // ── Reminder helpers (module-level, no stale closure risk) ──────────────────
 
 async function scheduleAppNotif(time) {
   const [h, m] = time.split(':').map(Number);
   if (isNaN(h) || isNaN(m)) return null;
-  return Notifications.scheduleNotificationAsync({
-    content: {
-      title: '💊 Time for your allergy drops',
-      body: "Tap to open the app and log today's dose.",
-      sound: true,
-    },
-    trigger: { hour: h, minute: m, repeats: true },
-  });
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'Daily reminders',
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: 'default',
+    });
+  }
+  try {
+    return await Notifications.scheduleNotificationAsync({
+      content: {
+        title: '💊 Time for your allergy drops',
+        body: "Tap to open the app and log today's dose.",
+        sound: true,
+        ...(Platform.OS === 'android' && { channelId: 'default' }),
+      },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour: h, minute: m },
+    });
+  } catch (e) {
+    console.error('scheduleAppNotif failed:', e);
+    return null;
+  }
 }
 
 async function cancelAppNotif(id) {
@@ -73,15 +88,12 @@ function isValidTime(str) {
 
 export default function SettingsScreen() {
   const [data, setData] = useState(null);
-  const [timeInput, setTimeInput] = useState('');
-  const [timeError, setTimeError] = useState('');
+  const [datePickerFor, setDatePickerFor] = useState(null);
+  const [timePickerOpen, setTimePickerOpen] = useState(false);
 
-  useEffect(() => {
-    loadData().then(d => {
-      setData(d);
-      setTimeInput(d.notificationTime);
-    });
-  }, []);
+  useFocusEffect(useCallback(() => {
+    loadData().then(setData);
+  }, []));
 
   async function persist(updated) {
     setData(updated);
@@ -96,10 +108,21 @@ export default function SettingsScreen() {
     if (enabled) {
       const { status } = await Notifications.requestPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission required', 'Notification permission is needed to send daily reminders.');
+        Alert.alert(
+          'Permission required',
+          'Notification permission was denied. Enable it in your device settings to use this feature.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+          ]
+        );
         return;
       }
       dailyNotifId = await scheduleAppNotif(data.notificationTime);
+      if (!dailyNotifId) {
+        Alert.alert('Could not schedule reminder', 'There was a problem setting up your notification. Try restarting the app.');
+        return;
+      }
     }
     await persist({ ...data, notificationsEnabled: enabled, dailyNotifId });
   }
@@ -114,29 +137,26 @@ export default function SettingsScreen() {
     await persist({ ...data, calendarEnabled: enabled, calendarEventId });
   }
 
-  async function handleTimeBlur() {
-    if (!isValidTime(timeInput)) {
-      setTimeError('Use HH:MM format, e.g. 09:00');
-      setTimeInput(data.notificationTime);
-      return;
-    }
-    setTimeError('');
-    if (timeInput === data.notificationTime) return;
+  async function handleTimeChange(date) {
+    if (!date) return;
+    const h = date.getHours();
+    const m = date.getMinutes();
+    const newTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    if (newTime === data.notificationTime) return;
 
-    // Reschedule anything that's active
     let dailyNotifId = data.dailyNotifId;
     let calendarEventId = data.calendarEventId;
 
     if (data.notificationsEnabled) {
       await cancelAppNotif(dailyNotifId);
-      dailyNotifId = await scheduleAppNotif(timeInput);
+      dailyNotifId = await scheduleAppNotif(newTime);
     }
     if (data.calendarEnabled) {
       await deleteCalendarEvent(calendarEventId);
-      calendarEventId = await createCalendarEvent(timeInput);
+      calendarEventId = await createCalendarEvent(newTime);
     }
 
-    await persist({ ...data, notificationTime: timeInput, dailyNotifId, calendarEventId });
+    await persist({ ...data, notificationTime: newTime, dailyNotifId, calendarEventId });
   }
 
   // ── Other helpers ─────────────────────────────────────────────────────────
@@ -225,23 +245,89 @@ export default function SettingsScreen() {
           </View>
         </TouchableOpacity>
 
-        {/* Time input — shown when either option is active */}
+        {/* Time picker — shown when either option is active */}
         {eitherReminderOn && (
           <View style={{ marginTop: 18 }}>
-            <Text style={s.fieldLabel}>Reminder time (24-hour format)</Text>
-            <TextInput
-              style={[s.input, timeError ? s.inputError : null]}
-              value={timeInput}
-              onChangeText={setTimeInput}
-              onBlur={handleTimeBlur}
-              placeholder="09:00"
-              placeholderTextColor="#ccc"
-              keyboardType="numbers-and-punctuation"
-              maxLength={5}
-            />
-            {timeError ? <Text style={s.errorText}>{timeError}</Text> : null}
-            <Text style={s.fieldHint}>Changes apply when you leave this field.</Text>
+            <Text style={s.fieldLabel}>Reminder time</Text>
+            <TouchableOpacity style={s.datePill} onPress={() => setTimePickerOpen(true)}>
+              <Text style={s.datePillText}>
+                {(() => {
+                  const [h, m] = (data.notificationTime || '09:00').split(':').map(Number);
+                  const d = new Date();
+                  d.setHours(h, m, 0, 0);
+                  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                })()}
+              </Text>
+            </TouchableOpacity>
+            {timePickerOpen && (
+              <DateTimePicker
+                value={(() => {
+                  const [h, m] = (data.notificationTime || '09:00').split(':').map(Number);
+                  const d = new Date();
+                  d.setHours(h, m, 0, 0);
+                  return d;
+                })()}
+                mode="time"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={(_, date) => {
+                  setTimePickerOpen(Platform.OS === 'ios');
+                  handleTimeChange(date);
+                }}
+              />
+            )}
           </View>
+        )}
+      </View>
+
+      {/* Patient Info */}
+      <View style={s.card}>
+        <Text style={s.cardTitle}>Patient Info</Text>
+        <Text style={s.fieldLabel}>Doctor name</Text>
+        <TextInput
+          style={s.input}
+          value={data.doctorName || ''}
+          onChangeText={v => persist({ ...data, doctorName: v })}
+          placeholder="e.g. Dr. Smith"
+          placeholderTextColor="#ccc"
+          autoCapitalize="words"
+        />
+        <Text style={[s.fieldLabel, { marginTop: 12 }]}>Date of birth</Text>
+        <TouchableOpacity style={s.datePill} onPress={() => setDatePickerFor('dob')}>
+          <Text style={s.datePillText}>
+            {data.patientDOB ? formatDisplayDate(data.patientDOB) : 'Select date of birth'}
+          </Text>
+        </TouchableOpacity>
+        {datePickerFor === 'dob' && (
+          <DateTimePicker
+            value={data.patientDOB ? new Date(data.patientDOB + 'T12:00:00') : new Date(1985, 0, 1)}
+            mode="date" display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+            maximumDate={new Date()}
+            onChange={(_, date) => {
+              setDatePickerFor(null);
+              if (date) {
+                const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+                persist({ ...data, patientDOB: key });
+              }
+            }} />
+        )}
+        <Text style={[s.fieldLabel, { marginTop: 12 }]}>Dosage sheet date</Text>
+        <TouchableOpacity style={s.datePill} onPress={() => setDatePickerFor('sheetDate')}>
+          <Text style={s.datePillText}>
+            {data.dosageSheetDate ? formatDisplayDate(data.dosageSheetDate) : 'Select sheet date'}
+          </Text>
+        </TouchableOpacity>
+        {datePickerFor === 'sheetDate' && (
+          <DateTimePicker
+            value={data.dosageSheetDate ? new Date(data.dosageSheetDate + 'T12:00:00') : new Date()}
+            mode="date" display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+            maximumDate={new Date()}
+            onChange={(_, date) => {
+              setDatePickerFor(null);
+              if (date) {
+                const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+                persist({ ...data, dosageSheetDate: key });
+              }
+            }} />
         )}
       </View>
 
@@ -357,6 +443,8 @@ const s = StyleSheet.create({
   },
   inputError: { borderColor: '#c62828' },
   errorText: { fontSize: 12, color: '#c62828', marginTop: 4 },
+  datePill: { borderWidth: 1.5, borderColor: '#e8eeff', borderRadius: 10, padding: 12, backgroundColor: '#fafbff' },
+  datePillText: { fontSize: 14, color: '#333' },
 
   epiStatus: { borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
   epiStatusText: { fontSize: 12, fontWeight: '700' },

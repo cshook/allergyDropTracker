@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  TextInput, Switch, Alert, Animated,
+  TextInput, Switch, Alert,
 } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import { useFocusEffect } from '@react-navigation/native';
 import { loadData, saveData, todayKey, formatDisplayDate, addDays } from '../utils/storage';
 
 // ── WCAG AA compliant status colors against white (#fff) ──────────────
@@ -241,12 +242,11 @@ export default function LogScreen() {
   const [reaction, setReaction] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const cardAnim = useRef(new Animated.Value(0)).current;
   const scrollRef = useRef(null);
 
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     loadData().then(d => { setData(d); fillFields(d, selectedDate); });
-  }, []);
+  }, [selectedDate]));
 
   function fillFields(d, date) {
     const entry = d?.log?.[date];
@@ -258,11 +258,6 @@ export default function LogScreen() {
   function selectDate(date) {
     setSelectedDate(date);
     if (data) fillFields(data, date);
-    // Animate card and scroll to top
-    Animated.sequence([
-      Animated.timing(cardAnim, { toValue: 1, duration: 120, useNativeDriver: true }),
-      Animated.timing(cardAnim, { toValue: 0, duration: 120, useNativeDriver: true }),
-    ]).start();
     scrollRef.current?.scrollTo({ y: 0, animated: true });
   }
 
@@ -331,7 +326,7 @@ export default function LogScreen() {
     <ScrollView ref={scrollRef} style={s.root} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
 
       {/* ── DAY CARD ── */}
-      <Animated.View style={[s.card, { opacity: cardAnim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [1, 0.6, 1] }) }]}>
+      <View style={s.card}>
         <Text style={s.cardDateLabel}>{formatDisplayDate(selectedDate)}</Text>
 
         {/* Status badge */}
@@ -372,7 +367,7 @@ export default function LogScreen() {
         <TouchableOpacity style={[s.saveBtn, !dirty && s.saveBtnOff]} onPress={saveEntry} disabled={!dirty}>
           <Text style={s.saveBtnText}>{dirty ? 'Save' : 'Saved'}</Text>
         </TouchableOpacity>
-      </Animated.View>
+      </View>
 
       {/* ── CALENDAR ── */}
       <View style={s.calCard}>

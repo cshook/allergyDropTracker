@@ -106,7 +106,7 @@ PREV_SKIPS: skip_date → skip_reason → skip_another → (loop or return)
 - **Week 10 banner:** Shows on Home after week 9 dose until user taps "drops received."
 - **Consecutive skips:** Counter resets on successful dose. Alert at 3+ consecutive skips.
 - **Skip logic:** 7 *doses* (not calendar days) = 1 complete week. Skips consume calendar days, not dose count.
-- **Set #4 continuation:** User may continue Set #4 past week 14 while waiting for maintenance drops. MD switch only available after ≥1 full 7-day cycle of Set #4.
+- **Set #4 continuation:** User may continue Set #4 while waiting for mail-order maintenance drops. `currentWeek` increments past 3 (4, 5, …). Drops/day stays at 3 for all continuation weeks — always use `Math.min(currentWeek, 3)` for drop count display. MD switch button and "Start New Dosage Sheet" link appear at `currentWeek >= 4` (second week of 3-drop dosing).
 
 ## Dose Timer Flow (HomeScreen)
 ```
@@ -126,17 +126,12 @@ Verified colors:
 - EpiPen warning: `#b45309` on white — 6.1:1 ✓
 
 ## What Is NOT Yet Built
-1. **SettingsScreen** — doctor name, DOB, dosage sheet date, set colors not editable post-onboarding.
-2. **ScheduleScreen** — MD switch logic (gated: ≥1 complete Set #4 cycle) and Set #4 continuation past week 14.
-3. **New Dosage Sheet wizard** — "Start New Dosage Sheet" on Home is a placeholder Alert.
+1. **SettingsScreen set colors** — set color picker not editable post-onboarding. (Doctor name, DOB, dosage sheet date now editable in Settings.)
+2. **~~ScheduleScreen MD switch / Set 4 continuation~~** — done.
+3. **~~New Dosage Sheet wizard~~** — done. Build-up→maintenance: sets currentSet=5, currentWeek=1, maintenanceDrops, dosageSheetDate. Maintenance renewal: resets orderReminders, updates maintenanceDrops and dosageSheetDate. Link gated: Set 4 Week 2+ or maintenance post-reorder.
 4. **~~Home greeting~~** — done.
 5. **Historical PDF export** — exports entire log as one sheet; needs per-sheet selection when multiple sheets exist.
-6. **HomeScreen dose progress bar** — sits below the dose info card.
-   - **Build-up:** `{currentSet} [■■■□□□□] {nextSet}` — 7-dose increments. Set labels use same display logic as onboarding (numeric set IDs, Set 4's next label = "Maintenance").
-   - **Maintenance:** `[■■■□□□□□] Reorder` — 8-week increments, no left label. Right label reads "Reorder" until `week10CheckDone` is true, then "Reordered" until a new dosage sheet is started.
+6. **~~HomeScreen dose progress bar~~** — done.
 
-## Known Issues
-- `autoCapitalize="words"` may be ignored by some Android keyboards — Android limitation, not a code bug
-- `__DEV__` wipe in `App.js` is safe — Metro sets `__DEV__` to `false` automatically in production
-- SettingsScreen not updated for v3 schema (doctor/DOB/sheet date/set colors missing)
-- Orphaned `renderSheetDate` function in OnboardingScreen.js — was WIP, not connected to router
+## Known Issues (Craig to Fix)
+- **ScheduleScreen week chip contrast** — completed/past week chips use `weekChipDone: { backgroundColor: '#e8f5e9' }` with white text (`weekChipTextActive`). White on `#e8f5e9` fails WCAG AA. Fix: darken the background or switch to a dark text color for done chips.

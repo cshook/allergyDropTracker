@@ -1,53 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
-import { loadData, saveData } from '../utils/storage';
+import { useFocusEffect } from '@react-navigation/native';
+import { loadData, saveData, BUILDUP_SETS } from '../utils/storage';
 
 const SETS = [-1, 1, 2, 3, 4];
 
 export default function ScheduleScreen() {
   const [data, setData] = useState(null);
 
-  useEffect(() => { loadData().then(setData); }, []);
-
-  async function completeWeek() {
-    if (!data) return;
-    let updated = { ...data };
-
-    if (updated.currentSet === 5) {
-      Alert.alert('Already in Maintenance', 'You are in the maintenance phase.');
-      return;
-    }
-
-    if (updated.currentWeek < 3) {
-      updated.currentWeek = updated.currentWeek + 1;
-    } else {
-      const idx = SETS.indexOf(updated.currentSet);
-      if (idx < SETS.length - 1) {
-        updated.currentSet = SETS[idx + 1];
-        updated.currentWeek = 1;
-      } else {
-        Alert.alert(
-          'Start Maintenance?',
-          'You have completed all build-up sets. Move to maintenance phase?',
-          [
-            { text: 'Not yet', style: 'cancel' },
-            {
-              text: 'Yes', onPress: async () => {
-                updated.currentSet = 5;
-                updated.currentWeek = 1;
-                setData(updated);
-                await saveData(updated);
-              }
-            }
-          ]
-        );
-        return;
-      }
-    }
-
-    setData(updated);
-    await saveData(updated);
-  }
+  useFocusEffect(useCallback(() => { loadData().then(setData); }, []));
 
   if (!data) {
     return (
@@ -56,6 +17,20 @@ export default function ScheduleScreen() {
       </View>
     );
   }
+
+  const isMaintenance = data.currentSet === 5;
+  const currentSetIdx = BUILDUP_SETS.indexOf(data.currentSet);
+  const progressSlots = isMaintenance ? 8 : 7;
+  const progressFilled = isMaintenance
+    ? Math.min(data.currentWeek - 1, 8)
+    : Math.min(Object.values(data.log || {}).filter(e =>
+        e.set === data.currentSet && e.week === data.currentWeek &&
+        (e.status === 'taken' || e.status === 'manual')
+      ).length, 7);
+  const progressLeftLabel = isMaintenance ? null : `Set ${data.currentSet}`;
+  const progressRightLabel = isMaintenance
+    ? (data.orderReminders?.week10CheckDone ? 'Reordered' : 'Reorder')
+    : (data.currentSet === 4 ? 'Maint.' : `Set ${BUILDUP_SETS[currentSetIdx + 1]}`);
 
   const isCurrentSet = (set) => data.currentSet === set;
   const isPastSet = (set) => {
@@ -88,14 +63,22 @@ export default function ScheduleScreen() {
           <View style={s.bannerDivider} />
           <View style={s.bannerStat}>
             <Text style={s.bannerValue}>
-              {data.currentSet === 5 ? data.maintenanceDrops : data.currentWeek}
+              {data.currentSet === 5 ? data.maintenanceDrops : Math.min(data.currentWeek, 3)}
             </Text>
             <Text style={s.bannerStatLabel}>Drops/day</Text>
           </View>
         </View>
-        <TouchableOpacity style={s.advanceBtn} onPress={completeWeek}>
-          <Text style={s.advanceBtnText}>Complete Week →</Text>
-        </TouchableOpacity>
+        <View style={s.bannerProgressRow}>
+          {progressLeftLabel
+            ? <Text style={s.bannerProgressLabel}>{progressLeftLabel}</Text>
+            : <View style={s.bannerProgressLabelSpacer} />}
+          <View style={s.bannerProgressTrack}>
+            {Array.from({ length: progressSlots }).map((_, i) => (
+              <View key={i} style={[s.bannerProgressSlot, i < progressFilled && s.bannerProgressSlotFilled]} />
+            ))}
+          </View>
+          <Text style={s.bannerProgressLabel}>{progressRightLabel}</Text>
+        </View>
       </View>
 
       {/* Build-up Sets */}
@@ -123,6 +106,26 @@ export default function ScheduleScreen() {
                 );
               })}
             </View>
+            {set === 4 && current && data.currentWeek >= 4 && (
+              <TouchableOpacity style={s.mdSwitchBtn} onPress={() => {
+                Alert.alert(
+                  'Switch to Maintenance?',
+                  'Your maintenance drops have arrived. Switch now?',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Switch', onPress: async () => {
+                        const updated = { ...data, currentSet: 5, currentWeek: 1 };
+                        setData(updated);
+                        await saveData(updated);
+                      }
+                    },
+                  ]
+                );
+              }}>
+                <Text style={s.mdSwitchBtnText}>Switch to Maintenance →</Text>
+              </TouchableOpacity>
+            )}
           </View>
         );
       })}
@@ -161,20 +164,18 @@ const s = StyleSheet.create({
     padding: 20,
   },
   bannerLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 1.2, color: 'rgba(255,255,255,0.7)', marginBottom: 12 },
-  bannerRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', marginBottom: 16 },
+  bannerRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', marginBottom: 14 },
   bannerStat: { alignItems: 'center', flex: 1 },
   bannerValue: { fontSize: 26, fontWeight: '800', color: '#fff' },
   bannerStatLabel: { fontSize: 11, color: 'rgba(255,255,255,0.7)', marginTop: 2 },
   bannerDivider: { width: 1, height: 36, backgroundColor: 'rgba(255,255,255,0.3)' },
-  advanceBtn: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderRadius: 10,
-    padding: 12,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.4)',
-  },
-  advanceBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+
+  bannerProgressRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  bannerProgressTrack: { flex: 1, flexDirection: 'row', gap: 3 },
+  bannerProgressSlot: { flex: 1, height: 8, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.3)' },
+  bannerProgressSlotFilled: { backgroundColor: '#fff' },
+  bannerProgressLabel: { fontSize: 11, fontWeight: '700', color: 'rgba(255,255,255,0.7)', minWidth: 40, textAlign: 'center' },
+  bannerProgressLabelSpacer: { minWidth: 40 },
 
   sectionTitle: { fontSize: 13, fontWeight: '700', color: '#aaa', letterSpacing: 0.8, marginTop: 4 },
 
@@ -202,4 +203,15 @@ const s = StyleSheet.create({
   weekChipTextActive: { color: '#fff', fontWeight: '700' },
 
   maintenanceDesc: { fontSize: 14, color: '#777' },
+
+  mdSwitchBtn: {
+    marginTop: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: BLUE,
+    alignSelf: 'flex-start',
+  },
+  mdSwitchBtnText: { color: BLUE, fontWeight: '700', fontSize: 14 },
 });

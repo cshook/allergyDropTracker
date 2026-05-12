@@ -367,7 +367,7 @@ export default function OnboardingScreen({ onComplete }) {
             onChange={(_, date) => { setDatePickerFor(null); if (date) update('patientDOB', dateKey(date)); }} />
         )}
         <Text style={s.fieldLabel}>Doctor name <Text style={s.optional}>(optional)</Text></Text>
-        <TextInput style={s.input} placeholder="e.g. Orsini" placeholderTextColor="#bbb"
+        <TextInput style={s.input} placeholder="e.g. Smith" placeholderTextColor="#bbb"
           value={ws.doctorName} onChangeText={v => update('doctorName', v)} autoCapitalize="words" />
         <View style={s.footer}>
           <Btn label="Continue" onPress={() => goTo('epipen')} disabled={!valid} />
@@ -376,35 +376,7 @@ export default function OnboardingScreen({ onComplete }) {
     );
   }
 
-  function renderSheetDate() {
-    return (
-      <Shell title="Dosage sheet date"
-        subtitle="Optional — the date printed at the top of the physical sheet given to you by your doctor. Appears on PDF exports."
-        step={stepNum}>
-        <TouchableOpacity style={s.datePill} onPress={() => setDatePickerFor('sheetDate')}>
-          <Text style={[s.datePillText, !ws.dosageSheetDate && s.placeholder]}>
-            {ws.dosageSheetDate ? formatDisplayDate(ws.dosageSheetDate) : 'Select sheet date'}
-          </Text>
-        </TouchableOpacity>
-        {datePickerFor === 'sheetDate' && (
-          <DateTimePicker
-            value={ws.dosageSheetDate ? new Date(ws.dosageSheetDate + 'T12:00:00') : new Date()}
-            mode="date" display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-            maximumDate={new Date()}
-            onChange={(_, date) => { setDatePickerFor(null); if (date) update('dosageSheetDate', dateKey(date)); }} />
-        )}
-        <View style={s.footer}>
-          <View style={s.rowBtns}>
-            <GhostBtn label="Skip" onPress={() => goTo('epipen')} />
-            <Btn label="Continue" onPress={() => goTo('epipen')} flex
-              disabled={false} />
-          </View>
-        </View>
-      </Shell>
-    );
-  }
-
-  function renderSheetDateConfirm() {
+function renderSheetDateConfirm() {
     // Auto-populate with calculated start date if not yet set
     const calculated = calcStartDateFromWizard(ws);
     const displayDate = ws.dosageSheetDate || calculated;
@@ -559,11 +531,51 @@ export default function OnboardingScreen({ onComplete }) {
 
   function renderStartedSets() {
     const sets = getSetsForFlow(ws.startedFromMinusOne);
+
+    function applyUncheck(setId, w) {
+      const prev = ws.completedWeeks[setId] || {};
+      const cascadedSet = {};
+      for (let i = 1; i < w; i++) cascadedSet[`w${i}`] = prev[`w${i}`] || false;
+
+      const orderedSets = getSetsForFlow(ws.startedFromMinusOne);
+      const futureChecked = orderedSets
+        .filter(s => s > setId)
+        .some(s => Object.values(ws.completedWeeks[s] || {}).some(Boolean));
+
+      const applyUpdate = () => {
+        const newCompletedWeeks = Object.fromEntries(
+          orderedSets
+            .filter(s => s <= setId)
+            .map(s => [s, s === setId ? cascadedSet : ws.completedWeeks[s]])
+            .filter(([, val]) => Object.keys(val || {}).length > 0)
+        );
+        update('completedWeeks', newCompletedWeeks);
+      };
+
+      if (futureChecked) {
+        Alert.alert(
+          'Clear future sets?',
+          'Unchecking this week will also clear all completed weeks in later sets.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Continue', onPress: applyUpdate },
+          ]
+        );
+      } else {
+        applyUpdate();
+      }
+    }
+
     return (
       <Shell title="Which weeks have you completed?"
         subtitle="Only check a week if you completed all 7 doses for that week."
         step={stepNum} scrollable>
-        {sets.map(setId => (
+        {sets.map(setId => {
+          const idx = sets.indexOf(setId);
+          const prevSetComplete = idx === 0 || [1, 2, 3].every(wk => ws.completedWeeks[sets[idx - 1]]?.[`w${wk}`]);
+          const setAllChecked = [1, 2, 3].every(wk => ws.completedWeeks[setId]?.[`w${wk}`]);
+          const showLink = setAllChecked || prevSetComplete;
+          return (
           <View key={setId} style={s.setBlock}>
             <View style={s.setBlockHeader}>
               {setId === 5
@@ -571,25 +583,45 @@ export default function OnboardingScreen({ onComplete }) {
                 : (<><Text style={s.setBlockTitle}>Set</Text>
                     <View style={s.setBadge}><Text style={s.setBadgeText}>{setId}</Text></View></>)
               }
+              {showLink && (
+                <TouchableOpacity style={s.setCompleteLinkWrap} onPress={() => {
+                  if (setAllChecked) {
+                    applyUncheck(setId, 1);
+                  } else {
+                    update('completedWeeks', { ...ws.completedWeeks, [setId]: { w1: true, w2: true, w3: true } });
+                  }
+                }}>
+                  <Text style={s.setCompleteLink}>{setAllChecked ? 'Clear Set' : 'Set Complete'}</Text>
+                </TouchableOpacity>
+              )}
             </View>
             {[1, 2, 3].map(w => {
               const key = `w${w}`;
               const checked = ws.completedWeeks[setId]?.[key] || false;
+              const setIndex = sets.indexOf(setId);
+              const prevSetComplete = setIndex === 0 || [1, 2, 3].every(wk => ws.completedWeeks[sets[setIndex - 1]]?.[`w${wk}`]);
+              const prevWeekChecked = w === 1 ? prevSetComplete : ws.completedWeeks[setId]?.[`w${w - 1}`];
               return (
                 <TouchableOpacity key={w} style={s.weekRow} activeOpacity={0.7}
+                  disabled={!checked && !prevWeekChecked}
                   onPress={() => {
                     const prev = ws.completedWeeks[setId] || {};
-                    update('completedWeeks', { ...ws.completedWeeks, [setId]: { ...prev, [key]: !checked } });
+                    if (!checked) {
+                      update('completedWeeks', { ...ws.completedWeeks, [setId]: { ...prev, [key]: true } });
+                    } else {
+                      applyUncheck(setId, w);
+                    }
                   }}>
-                  <View style={[s.checkbox, checked && s.checkboxOn]}>
+                  <View style={[s.checkbox, checked && s.checkboxOn, !checked && !prevWeekChecked && s.checkboxDisabled]}>
                     {checked && <Text style={s.checkmark}>✓</Text>}
                   </View>
-                  <Text style={s.weekRowLabel}>Week {w} — {w} drop{w > 1 ? 's' : ''} · 7 doses</Text>
+                  <Text style={[s.weekRowLabel, !checked && !prevWeekChecked && s.weekRowLabelDisabled]}>Week {w} — {w} drop{w > 1 ? 's' : ''} · 7 doses</Text>
                 </TouchableOpacity>
               );
             })}
           </View>
-        ))}
+          );
+        })}
         <View style={s.footer}>
           <Btn label="Continue" onPress={() => goTo('started_partial')} />
         </View>
@@ -980,9 +1012,12 @@ export default function OnboardingScreen({ onComplete }) {
   return (
     <View style={s.root}>
       {showBack && (
-        <TouchableOpacity style={s.backBtn} onPress={goBack}>
-          <Text style={s.backBtnText}>‹ Back</Text>
-        </TouchableOpacity>
+        <View style={s.header}>
+          <TouchableOpacity style={s.backBtn} onPress={goBack}>
+            <Text style={s.backBtnText}>‹ Back</Text>
+          </TouchableOpacity>
+          <Text style={s.headerStep}>STEP {stepNum}</Text>
+        </View>
       )}
       <Animated.View style={[s.slide, { transform: [{ translateX: slideAnim }] }]}>
         {stepMap[step]?.()}
@@ -996,9 +1031,6 @@ export default function OnboardingScreen({ onComplete }) {
 function Shell({ title, subtitle, children, hideProgress, scrollable, step }) {
   const inner = (
     <View style={ss.shell}>
-      {!hideProgress && step !== undefined && (
-        <Text style={ss.stepLabel}>STEP {step}</Text>
-      )}
       <Text style={ss.title}>{title}</Text>
       {subtitle ? <Text style={ss.subtitle}>{subtitle}</Text> : null}
       <View style={ss.body}>{children}</View>
@@ -1061,9 +1093,11 @@ function NumPicker({ value, min, max, onChange }) {
 // ── STYLES ────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#f0f4ff' },
-  backBtn: { position: 'absolute', top: 54, left: 16, zIndex: 10, padding: 8 },
-  backBtnText: { color: BLUE, fontSize: 17, fontWeight: '600' },
+  root: { flex: 1, backgroundColor: '#f0f4ff'},
+  header: { position: 'absolute', top: 46, left: 0, right: 0, zIndex: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16},
+  backBtn: { padding: 8 },
+  backBtnText: { color: BLUE, fontSize: 20, fontWeight: '700' },
+  headerStep: { fontSize: 11, fontWeight: '700', letterSpacing: 1.5, color: '#000', paddingRight: 16 },
   slide: { flex: 1 },
 
   disclaimerBox: { backgroundColor: '#fff', borderRadius: 16, padding: 20, gap: 12, elevation: 2 },
@@ -1097,6 +1131,10 @@ const s = StyleSheet.create({
 
   setBlock: { marginBottom: 22 },
   setBlockHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  setCompleteLinkWrap: { marginLeft: 'auto', paddingLeft: 16 },
+  setCompleteLink: { fontSize: 13, color: BLUE, fontWeight: '600' },
+  checkboxDisabled: { borderColor: '#e0e0e0', backgroundColor: '#f5f5f5' },
+  weekRowLabelDisabled: { color: '#bbb' },
   setBlockTitle: { fontSize: 15, fontWeight: '800', color: BLUE },
   setBadge: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#777', alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
   setBadgeText: { color: '#fff', fontSize: 13, fontWeight: '800' },
@@ -1114,8 +1152,7 @@ const s = StyleSheet.create({
 });
 
 const ss = StyleSheet.create({
-  shell: { flex: 1, paddingHorizontal: 24, paddingTop: 80, paddingBottom: 24 },
-  stepLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 1.5, color: '#b3c6ff', marginBottom: 10 },
+  shell: { flex: 1, paddingHorizontal: 24, paddingTop: 110, paddingBottom: 24 },
   title: { fontSize: 26, fontWeight: '800', color: '#1a1a2e', lineHeight: 34, marginBottom: 8 },
   subtitle: { fontSize: 14, color: '#888', lineHeight: 21, marginBottom: 20 },
   body: { flex: 1 },
