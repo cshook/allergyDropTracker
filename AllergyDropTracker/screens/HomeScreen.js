@@ -141,6 +141,15 @@ export default function HomeScreen() {
     }
   }, [flow]);
 
+  function advanceSet4Week(d) {
+    if (d.currentSet !== 4 || d.currentWeek < 3) return d;
+    const weekDoses = Object.values(d.log || {}).filter(
+      e => e.set === 4 && e.week === d.currentWeek && (e.status === 'taken' || e.status === 'manual')
+    ).length;
+    if (weekDoses >= 7) return { ...d, currentWeek: d.currentWeek + 1 };
+    return d;
+  }
+
   function clearTimer() {
     if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -257,11 +266,12 @@ export default function HomeScreen() {
         },
       },
     };
-    setData(updated);
-    await saveData(updated);
+    const advanced = advanceSet4Week(updated);
+    setData(advanced);
+    await saveData(advanced);
     setShowEarlyStop(false);
     setFlow('done');
-    checkWeek9Reminder(updated);
+    checkWeek9Reminder(advanced);
   }
 
   async function confirmQuickLog() {
@@ -282,8 +292,9 @@ export default function HomeScreen() {
         },
       },
     };
-    setData(updated);
-    await saveData(updated);
+    const advanced = isSkip ? updated : advanceSet4Week(updated);
+    setData(advanced);
+    await saveData(advanced);
     setFlow('idle');
     if (isSkip && newSkips >= 3) {
       Alert.alert(
@@ -292,15 +303,15 @@ export default function HomeScreen() {
         [{ text: 'Got it' }]
       );
     }
-    if (!isSkip) checkWeek9Reminder(updated);
+    if (!isSkip) checkWeek9Reminder(advanced);
   }
 
   // d param lets AppState/stale-closure callers pass dataRef.current explicitly
   async function completeDose(d = data) {
     setFlow('done');
     const today = storageTodayKey();
-    const drops = d.currentSet === 5 ? d.maintenanceDrops : d.currentWeek;
-    const updated = {
+    const drops = d.currentSet === 5 ? d.maintenanceDrops : Math.min(d.currentWeek, 3);
+    let updated = {
       ...d,
       consecutiveSkips: 0,
       log: {
@@ -311,6 +322,7 @@ export default function HomeScreen() {
         },
       },
     };
+    updated = advanceSet4Week(updated);
     setData(updated);
     await saveData(updated);
     checkWeek9Reminder(updated);
@@ -318,18 +330,50 @@ export default function HomeScreen() {
 
   async function confirmNewSheet() {
     const isMaintTransition = data.currentSet === 4;
-    const updated = {
-      ...data,
-      maintenanceDrops: sheetDrops,
-      dosageSheetDate: sheetDate,
-      ...(isMaintTransition
-        ? { currentSet: 5, currentWeek: 1 }
-        : { orderReminders: { week9Dismissed: false, week10CheckDone: false } }
-      ),
-    };
-    setData(updated);
-    await saveData(updated);
-    setFlow('idle');
+
+    const conflicting = Object.entries(data.log || {}).filter(([date, entry]) =>
+      date >= sheetDate && (entry.set !== 5 || entry.drops !== sheetDrops)
+    );
+
+    async function doSave(updateExisting) {
+      let updatedLog = { ...data.log };
+      if (updateExisting) {
+        Object.keys(updatedLog).forEach(date => {
+          if (date >= sheetDate) {
+            updatedLog[date] = { ...updatedLog[date], set: 5, drops: sheetDrops, week: 1 };
+          }
+        });
+      }
+      const updated = {
+        ...data,
+        maintenanceDrops: sheetDrops,
+        dosageSheetDate: sheetDate,
+        log: updatedLog,
+        ...(isMaintTransition
+          ? { currentSet: 5, currentWeek: 1 }
+          : { currentWeek: 1, orderReminders: { week9Dismissed: false, week10CheckDone: false } }
+        ),
+      };
+      setData(updated);
+      await saveData(updated);
+      setFlow('idle');
+    }
+
+    if (conflicting.length > 0) {
+      const formattedDate = new Date(sheetDate + 'T00:00:00').toLocaleDateString();
+      Alert.alert(
+        `${conflicting.length} dose${conflicting.length !== 1 ? 's' : ''} already logged`,
+        `Doses from ${formattedDate} forward don't match the new schedule. What would you like to do?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Change Start Date', onPress: () => { setSheetDate(''); setSheetDatePickerOpen(true); } },
+          { text: `Update to ${sheetDrops} Drop${sheetDrops !== 1 ? 's' : ''}`, onPress: () => doSave(true) },
+        ]
+      );
+      return;
+    }
+
+    await doSave(false);
   }
 
   async function skipDose() {
@@ -414,9 +458,13 @@ export default function HomeScreen() {
   const greeting = hour < 12 ? `Good Morning${friendlyName}` : hour < 17 ? `Good Afternoon${friendlyName}` : `Good Evening${friendlyName}`;
 
 
-  // Week 10 order reminder banner
-  const showWeek10Banner = !data.orderReminders?.week10CheckDone &&
-    data.currentWeek === 1 && [4, 5].includes(data.currentSet);
+  // Set 4 Week 3 complete = 7 logged doses in that week (currentWeek may have advanced past 3)
+  const set4Week3Done = data.currentSet === 4 &&
+    Object.values(data.log || {}).filter(e =>
+      e.set === 4 && e.week === 3 && (e.status === 'taken' || e.status === 'manual')
+    ).length >= 7;
+
+  const orderPlaced = isMaintenance && data.orderReminders?.week9Dismissed;
 
   // Progress bar
   const isMaintenance = data.currentSet === 5;
@@ -427,7 +475,7 @@ export default function HomeScreen() {
     : Math.min(Object.values(data.log || {}).filter(e => e.set === data.currentSet && e.week === data.currentWeek && (e.status === 'taken' || e.status === 'manual')).length, 7);
   const progressLeftLabel = isMaintenance ? null : `Set ${data.currentSet}`;
   const progressRightLabel = isMaintenance
-    ? (data.orderReminders?.week10CheckDone ? 'Reordered' : 'Reorder')
+    ? 'Reorder'
     : (data.currentSet === 4 ? 'Maint.' : `Set ${BUILDUP_SETS[currentSetIdx + 1]}`);
 
   return (
@@ -454,33 +502,35 @@ export default function HomeScreen() {
         </View>
       </View>
 
-      {/* Progress bar */}
-      <View style={s.card}>
-        <View style={s.progressRow}>
-          {progressLeftLabel
-            ? <Text style={s.progressLabel}>{progressLeftLabel}</Text>
-            : <View style={s.progressLabelSpacer} />}
-          <View style={s.progressTrack}>
-            {Array.from({ length: progressSlots }).map((_, i) => (
-              <View key={i} style={[s.progressSlot, i < progressFilled && s.progressSlotFilled]} />
-            ))}
-          </View>
-          <Text style={s.progressLabel}>{progressRightLabel}</Text>
-        </View>
-      </View>
-
-      {/* Week 10 reorder banner */}
-      {showWeek10Banner && (
-        <View style={s.bannerCard}>
-          <Text style={s.bannerTitle}>📦 Have your new drops arrived?</Text>
-          <Text style={s.bannerBody}>Tap below once your replacement drops are in hand.</Text>
-          <TouchableOpacity style={s.bannerBtn} onPress={async () => {
-            const updated = { ...data, orderReminders: { ...data.orderReminders, week10CheckDone: true } };
-            setData(updated);
-            await saveData(updated);
+      {/* Progress bar or Order Placed */}
+      {orderPlaced ? (
+        <View style={s.card}>
+          <Text style={s.orderPlacedText}>Order Placed</Text>
+          <TouchableOpacity onPress={() => {
+            setSheetDrops(data.maintenanceDrops || 2);
+            setSheetDate('');
+            setSheetDatePickerOpen(false);
+            setFlow('newSheet');
           }}>
-            <Text style={s.bannerBtnText}>✓ Yes, drops received</Text>
+            <Text style={s.dropsReceivedLink}>Drops Received →</Text>
           </TouchableOpacity>
+        </View>
+      ) : (
+        <View style={s.card}>
+          <View style={s.progressRow}>
+            {progressLeftLabel
+              ? <Text style={s.progressLabel}>{progressLeftLabel}</Text>
+              : <View style={s.progressLabelSpacer} />}
+            <View style={s.progressTrack}>
+              {Array.from({ length: progressSlots }).map((_, i) => (
+                <View key={i} style={[s.progressSlot, i < progressFilled && s.progressSlotFilled]} />
+              ))}
+            </View>
+            <Text style={s.progressLabel}>{progressRightLabel}</Text>
+          </View>
+          <Text style={s.progressCaption}>
+            {isMaintenance ? 'each slot = 1 week' : 'each slot = 1 dose'}
+          </Text>
         </View>
       )}
 
@@ -518,8 +568,8 @@ export default function HomeScreen() {
           )}
         </View>
       )}
-      {/* New dosage sheet link — visible after ≥1 week of Set 4 (build-up) or after reorder confirmed (maintenance) */}
-      {flow === 'idle' && ((data.currentSet === 4 && data.currentWeek >= 4) || (data.currentSet === 5 && data.orderReminders?.week10CheckDone)) && (
+      {/* New dosage sheet link — Set 4 Week 3 completion only */}
+      {flow === 'idle' && set4Week3Done && (
         <TouchableOpacity style={s.sheetLink} onPress={() => {
           setSheetDrops(data.maintenanceDrops || 2);
           setSheetDate('');
@@ -875,6 +925,10 @@ const s = StyleSheet.create({
   bannerBtn: { backgroundColor: '#7a4f00', borderRadius: 10, padding: 11, alignItems: 'center' },
   bannerBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
 
+  // Order placed / drops received
+  orderPlacedText: { fontSize: 16, fontWeight: '700', color: '#1a3a6b', marginBottom: 8 },
+  dropsReceivedLink: { fontSize: 14, fontWeight: '600', color: BLUE, textDecorationLine: 'underline' },
+
   // New dosage sheet link — #1a3a6b on transparent = renders on #f0f4ff bg = 9.2:1 ✓
   sheetLink: { alignItems: 'center', paddingVertical: 10 },
   sheetLinkText: { color: '#1a3a6b', fontSize: 14, fontWeight: '600', textDecorationLine: 'underline' },
@@ -903,4 +957,5 @@ const s = StyleSheet.create({
   progressSlotFilled: { backgroundColor: BLUE },
   progressLabel: { fontSize: 11, fontWeight: '700', color: '#aaa', minWidth: 40, textAlign: 'center' },
   progressLabelSpacer: { minWidth: 40 },
+  progressCaption: { fontSize: 10, color: '#ccc', textAlign: 'center', marginTop: 5 },
 });

@@ -29,8 +29,13 @@ export default function ScheduleScreen() {
       ).length, 7);
   const progressLeftLabel = isMaintenance ? null : `Set ${data.currentSet}`;
   const progressRightLabel = isMaintenance
-    ? (data.orderReminders?.week10CheckDone ? 'Reordered' : 'Reorder')
+    ? 'Reorder'
     : (data.currentSet === 4 ? 'Maint.' : `Set ${BUILDUP_SETS[currentSetIdx + 1]}`);
+
+  const set4Week3Done = data.currentSet === 4 &&
+    Object.values(data.log || {}).filter(e =>
+      e.set === 4 && e.week === 3 && (e.status === 'taken' || e.status === 'manual')
+    ).length >= 7;
 
   const isCurrentSet = (set) => data.currentSet === set;
   const isPastSet = (set) => {
@@ -79,6 +84,9 @@ export default function ScheduleScreen() {
           </View>
           <Text style={s.bannerProgressLabel}>{progressRightLabel}</Text>
         </View>
+        <Text style={s.bannerProgressCaption}>
+          {isMaintenance ? 'each slot = 1 week' : 'each slot = 1 dose'}
+        </Text>
       </View>
 
       {/* Build-up Sets */}
@@ -96,17 +104,24 @@ export default function ScheduleScreen() {
             <View style={s.weeksRow}>
               {[1, 2, 3].map(week => {
                 const isCurWeek = current && data.currentWeek === week;
-                const isPastWeek = past || (current && week < data.currentWeek);
+                const isPastWeek = past || (current && week < data.currentWeek) || (set === 4 && current && set4Week3Done);
                 return (
-                  <View key={week} style={[s.weekChip, isCurWeek && s.weekChipCurrent, isPastWeek && s.weekChipDone]}>
+                  <View key={week} style={[s.weekChip, isCurWeek && !set4Week3Done && s.weekChipCurrent, isPastWeek && s.weekChipDone]}>
                     <Text style={[s.weekChipText, (isCurWeek || isPastWeek) && s.weekChipTextActive]}>
                       W{week}: {week} drop{week > 1 ? 's' : ''}
                     </Text>
                   </View>
                 );
               })}
+              {set === 4 && current && set4Week3Done && data.currentWeek > 3 && (
+                <View style={[s.weekChip, s.weekChipCurrent]}>
+                  <Text style={[s.weekChipText, s.weekChipTextActive]}>
+                    Cont. W{data.currentWeek - 3}: 3 drops
+                  </Text>
+                </View>
+              )}
             </View>
-            {set === 4 && current && data.currentWeek >= 4 && (
+            {set === 4 && current && set4Week3Done && (
               <TouchableOpacity style={s.mdSwitchBtn} onPress={() => {
                 Alert.alert(
                   'Switch to Maintenance?',
@@ -176,6 +191,7 @@ const s = StyleSheet.create({
   bannerProgressSlotFilled: { backgroundColor: '#fff' },
   bannerProgressLabel: { fontSize: 11, fontWeight: '700', color: 'rgba(255,255,255,0.7)', minWidth: 40, textAlign: 'center' },
   bannerProgressLabelSpacer: { minWidth: 40 },
+  bannerProgressCaption: { fontSize: 10, color: 'rgba(255,255,255,0.45)', textAlign: 'center', marginTop: 5 },
 
   sectionTitle: { fontSize: 13, fontWeight: '700', color: '#aaa', letterSpacing: 0.8, marginTop: 4 },
 

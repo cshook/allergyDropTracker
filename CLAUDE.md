@@ -45,7 +45,7 @@ Dates stored as `YYYY-MM-DD` strings. Always display using device locale (`toLoc
 ```javascript
 {
   currentSet: 1,             // -1|1|2|3|4|5 (5 = maintenance)
-  currentWeek: 1,            // 1|2|3
+  currentWeek: 1,            // 1|2|3 (4+ during Set 4 continuation)
   consecutiveSkips: 0,
   maintenanceDrops: 2,       // 1-3
 
@@ -106,7 +106,7 @@ PREV_SKIPS: skip_date → skip_reason → skip_another → (loop or return)
 - **Week 10 banner:** Shows on Home after week 9 dose until user taps "drops received."
 - **Consecutive skips:** Counter resets on successful dose. Alert at 3+ consecutive skips.
 - **Skip logic:** 7 *doses* (not calendar days) = 1 complete week. Skips consume calendar days, not dose count.
-- **Set #4 continuation:** User may continue Set #4 while waiting for mail-order maintenance drops. `currentWeek` increments past 3 (4, 5, …). Drops/day stays at 3 for all continuation weeks — always use `Math.min(currentWeek, 3)` for drop count display. MD switch button and "Start New Dosage Sheet" link appear at `currentWeek >= 4` (second week of 3-drop dosing).
+- **Set #4 continuation:** User may continue Set #4 while waiting for mail-order maintenance drops. Drops/day stays at 3 — always use `Math.min(currentWeek, 3)` for drop count display. `currentWeek` **auto-advances** after 7 taken/manual doses per week (week 3 → 4 → 5 → …), handled by `advanceSet4Week()` in HomeScreen after every dose completion. MD switch button and "Start New Dosage Sheet" link gate on `set4Week3Done` — computed from the log (≥7 taken/manual entries with `set=4, week=3`), NOT from `currentWeek`, so the gate stays open even after the week counter advances. ScheduleScreen shows a "Cont. W{n}" chip for the active continuation week. User may switch to maintenance mid-continuation-week without completing 7 doses.
 
 ## Dose Timer Flow (HomeScreen)
 ```

@@ -6,6 +6,7 @@ import {
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { loadData, saveData, todayKey, formatDisplayDate, addDays } from '../utils/storage';
 
 // ── WCAG AA compliant status colors against white (#fff) ──────────────
@@ -37,6 +38,15 @@ function getFirstDayOfWeek(year, month) {
   return new Date(year, month, 1).getDay(); // 0=Sun
 }
 
+function buildPDFFilename(data) {
+  const parts = (data.userName || '').trim().split(/\s+/);
+  const fi = parts[0]?.[0]?.toUpperCase() || 'X';
+  const last = parts.length > 1 ? parts[parts.length - 1] : (parts[0] || 'User');
+  const d = data.dosageSheetDate || new Date().toISOString().slice(0, 10);
+  const [y, m, day] = d.split('-');
+  return `${fi}_${last}_${m}${day}${y}.pdf`;
+}
+
 function buildPDFHtml(data) {
   const log = data.log || {};
   const setColors = data.setColors || {};
@@ -50,136 +60,92 @@ function buildPDFHtml(data) {
     ? new Date(data.dosageSheetDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })
     : '';
   const exportDate = new Date().toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' });
-  const DOW_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
   const isMD = data.currentSet === 5;
   const hasMinusOne = Object.values(log).some(e => e.set === -1);
   const ruSets = hasMinusOne ? [-1, 1, 2, 3, 4] : [1, 2, 3, 4];
-  const todayStr = keyFromDate(new Date());
+  const HEADER_STYLE = 'background:#1a3a6b;color:#fff;font-weight:700;font-size:11px;padding:5px 8px;letter-spacing:1px;text-align:left';
 
-  let colHeaders = DOW_ABBR;
+  function fmtDate(dateStr) {
+    const d = new Date(dateStr + 'T12:00:00');
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  }
+
+  function buildWeekRow(weekDates, weekLabel, drops, accent) {
+    const lightBg = accent + '18';
+    const takenDates = [];
+    const weekNotes = [];
+
+    for (const dateStr of weekDates) {
+      const e = log[dateStr];
+      if (!e) continue;
+      if (e.status === 'taken' || e.status === 'manual') takenDates.push(fmtDate(dateStr));
+      const parts = [];
+      if (e.status === 'skipped') parts.push('SKIPPED');
+      if (e.reaction) parts.push('⚠ Adverse reaction');
+      if (e.notes) parts.push(e.notes.replace(/</g, '&lt;'));
+      if (e.status === 'skipped' || parts.length > 0) {
+        weekNotes.push(`${fmtDate(dateStr)}: ${parts.join(' — ')}`);
+      }
+    }
+
+    let rows = `
+      <tr>
+        <td style="border-left:4px solid ${accent};background:${lightBg};text-align:left;padding:5px 8px;white-space:nowrap;font-weight:700">${weekLabel}</td>
+        <td style="text-align:left;padding:5px 10px;color:#1b5e20;font-weight:600">${takenDates.join(', ') || '—'}</td>
+        <td style="border-right:4px solid ${accent};background:${lightBg};font-weight:700;color:${accent};white-space:nowrap;font-size:10px;text-align:center">${drops ? `${drops} DROP${drops !== 1 ? 'S' : ''}` : '—'}</td>
+      </tr>`;
+    if (weekNotes.length > 0) {
+      rows += `<tr><td colspan="3" style="background:#fffbea;border-left:4px solid ${accent};padding:4px 10px;font-size:10px;color:#555;text-align:left">${weekNotes.map(n => `• ${n}`).join('<br>')}</td></tr>`;
+    }
+    return rows;
+  }
+
   let tableBody = '';
 
   if (!isMD && data.dosageSheetDate) {
-    // RU sheet: generate full grid for all sets/weeks, fill log data where available
-    const startDOW = new Date(data.dosageSheetDate + 'T12:00:00').getDay();
-    colHeaders = Array.from({ length: 7 }, (_, i) => DOW_ABBR[(startDOW + i) % 7]);
-
     let calendarWeekIdx = 0;
-    const HEADER_STYLE = 'background:#1a3a6b;color:#fff;font-weight:700;font-size:11px;padding:5px 8px;letter-spacing:1px;text-align:left';
-
     ruSets.forEach(setId => {
       const accent = setColors[setId] || '#4f8ef7';
-      const lightBg = accent + '18';
       const headerLabel = setId === -1 ? 'SET -1' : `SET ${setId}`;
-      tableBody += `<tr><td colspan="9" style="${HEADER_STYLE}">${headerLabel}</td></tr>`;
-
+      tableBody += `<tr><td colspan="3" style="${HEADER_STYLE}">${headerLabel}</td></tr>`;
       [1, 2, 3].forEach(weekNum => {
         const weekStartDate = addDays(data.dosageSheetDate, calendarWeekIdx * 7);
         const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStartDate, i));
-        const drops = weekNum;
-        const accent2 = accent;
-        const weekNotes = [];
-
-        const dateCells = weekDates.map(dateStr => {
-          const d = new Date(dateStr + 'T12:00:00');
-          const lbl = `${d.getMonth() + 1}/${d.getDate()}`;
-          const e = log[dateStr];
-          if (!e) {
-            const isFuture = dateStr > todayStr;
-            return isFuture ? '<td></td>' : `<td style="color:#bbb">${lbl}</td>`;
-          }
-          if (e.notes || e.reaction) {
-            const note = `${lbl}:${e.status === 'skipped' ? ' SKIPPED' : ''}${e.reaction ? ' ⚠️ Adverse reaction' : ''}${e.notes ? ` — ${e.notes.replace(/</g, '&lt;')}` : ''}`;
-            weekNotes.push(note);
-          }
-          if (e.status === 'taken') return `<td style="color:#1b5e20;font-weight:600">${lbl}</td>`;
-          if (e.status === 'skipped') return `<td style="color:#7f0000;font-style:italic">${lbl}<br><small>SKIP</small></td>`;
-          return `<td>${lbl}</td>`;
-        }).join('');
-
-        tableBody += `
-          <tr>
-            <td style="border-left:4px solid ${accent2};background:${lightBg};text-align:left;padding:5px 8px;white-space:nowrap;font-weight:700">Wk #${weekNum}</td>
-            ${dateCells}
-            <td style="border-right:4px solid ${accent2};background:${lightBg};font-weight:700;color:${accent2};white-space:nowrap;font-size:10px">${drops} DROP${drops !== 1 ? 'S' : ''}</td>
-          </tr>`;
-
-        if (weekNotes.length > 0) {
-          tableBody += `<tr><td colspan="9" style="background:#fffbea;border-left:4px solid ${accent2};padding:4px 10px;font-size:10px;color:#555;text-align:left">${weekNotes.map(n => `• ${n}`).join('<br>')}</td></tr>`;
-        }
-
+        tableBody += buildWeekRow(weekDates, `Wk #${weekNum}`, weekNum, accent);
         calendarWeekIdx++;
       });
     });
 
   } else if (entries.length > 0) {
-    // MD sheet or no sheet date: generate from log entries
     const startDate = new Date(entries[0][0] + 'T12:00:00');
-    const startDOW = startDate.getDay();
-    colHeaders = Array.from({ length: 7 }, (_, i) => DOW_ABBR[(startDOW + i) % 7]);
-
     const endDate = new Date(entries[entries.length - 1][0] + 'T12:00:00');
     const allDates = [];
     const cur = new Date(startDate);
     while (cur <= endDate) { allDates.push(keyFromDate(cur)); cur.setDate(cur.getDate() + 1); }
-
     const weeks = [];
     for (let i = 0; i < allDates.length; i += 7) weeks.push(allDates.slice(i, i + 7));
 
     let currentWeekSet = null;
     let groupWeekNum = 0;
-    const HEADER_STYLE = 'background:#1a3a6b;color:#fff;font-weight:700;font-size:11px;padding:5px 8px;letter-spacing:1px;text-align:left';
-
     weeks.forEach(weekDates => {
       let weekSet = null, weekDrops = null;
-      const weekNotes = [];
-
       for (const dateStr of weekDates) {
         const e = log[dateStr];
         if (e) {
           if (weekSet == null && e.set != null) weekSet = e.set;
           if (!weekDrops && e.drops) weekDrops = e.drops;
-          if (e.notes || e.reaction) {
-            const d = new Date(dateStr + 'T12:00:00');
-            const note = `${d.getMonth() + 1}/${d.getDate()}:${e.status === 'skipped' ? ' SKIPPED' : ''}${e.reaction ? ' ⚠️ Adverse reaction' : ''}${e.notes ? ` — ${e.notes.replace(/</g, '&lt;')}` : ''}`;
-            weekNotes.push(note);
-          }
         }
       }
-
       const accent = (weekSet != null && setColors[weekSet]) ? setColors[weekSet] : '#4f8ef7';
-      const lightBg = accent + '18';
-
       if (weekSet !== currentWeekSet) {
         currentWeekSet = weekSet;
         groupWeekNum = 0;
         const headerLabel = weekSet === 5 ? 'MAINTENANCE' : weekSet != null ? `SET ${weekSet}` : '';
-        if (headerLabel) tableBody += `<tr><td colspan="9" style="${HEADER_STYLE}">${headerLabel}</td></tr>`;
+        if (headerLabel) tableBody += `<tr><td colspan="3" style="${HEADER_STYLE}">${headerLabel}</td></tr>`;
       }
       groupWeekNum++;
-
-      const dateCells = weekDates.map(dateStr => {
-        if (!dateStr) return '<td></td>';
-        const e = log[dateStr];
-        const d = new Date(dateStr + 'T12:00:00');
-        const lbl = `${d.getMonth() + 1}/${d.getDate()}`;
-        if (!e) return '<td></td>';
-        if (e.status === 'taken') return `<td style="color:#1b5e20;font-weight:600">${lbl}</td>`;
-        if (e.status === 'skipped') return `<td style="color:#7f0000;font-style:italic">${lbl}<br><small>SKIP</small></td>`;
-        return `<td>${lbl}</td>`;
-      }).join('');
-
-      tableBody += `
-        <tr>
-          <td style="border-left:4px solid ${accent};background:${lightBg};text-align:left;padding:5px 8px;white-space:nowrap;font-weight:700">Wk #${groupWeekNum}</td>
-          ${dateCells}
-          <td style="border-right:4px solid ${accent};background:${lightBg};font-weight:700;color:${accent};white-space:nowrap;font-size:10px">${weekDrops ? `${weekDrops} DROP${weekDrops !== 1 ? 'S' : ''}` : '—'}</td>
-        </tr>`;
-
-      if (weekNotes.length > 0) {
-        tableBody += `<tr><td colspan="9" style="background:#fffbea;border-left:4px solid ${accent};padding:4px 10px;font-size:10px;color:#555;text-align:left">${weekNotes.map(n => `• ${n}`).join('<br>')}</td></tr>`;
-      }
+      tableBody += buildWeekRow(weekDates, `Wk #${groupWeekNum}`, weekDrops, accent);
     });
   }
 
@@ -200,8 +166,8 @@ function buildPDFHtml(data) {
     .sv{font-size:18px;font-weight:800;color:#1a3a6b}
     .sl{font-size:9px;color:#555}
     table{width:100%;border-collapse:collapse;font-size:10px}
-    th{background:#1a3a6b;color:#fff;padding:5px 3px;text-align:center;font-size:9px}
-    td{padding:4px 2px;border:1px solid #ddd;text-align:center;vertical-align:middle}
+    th{background:#1a3a6b;color:#fff;padding:5px 8px;text-align:left;font-size:9px}
+    td{padding:4px 2px;border:1px solid #ddd;vertical-align:middle}
     .footer{margin-top:12px;font-size:9px;color:#999;border-top:1px solid #eee;padding-top:6px;text-align:center}
   </style></head><body>
     <h2>Allergy Drop Tracker — Dosage Log</h2>
@@ -221,11 +187,11 @@ function buildPDFHtml(data) {
     </div>
     <table>
       <thead><tr>
-        <th style="text-align:left;padding-left:6px">Week</th>
-        ${colHeaders.map(h => `<th>${h}</th>`).join('')}
-        <th>Drops</th>
+        <th style="width:60px">Week</th>
+        <th>Dates Taken</th>
+        <th style="width:60px;text-align:center">Drops</th>
       </tr></thead>
-      <tbody>${tableBody || '<tr><td colspan="9" style="text-align:center;color:#aaa;padding:16px">No entries yet</td></tr>'}</tbody>
+      <tbody>${tableBody || '<tr><td colspan="3" style="text-align:center;color:#aaa;padding:16px">No entries yet</td></tr>'}</tbody>
     </table>
     <div class="footer">Drops are applied under the tongue and held for two minutes, then swallowed. &nbsp;·&nbsp; Generated by Allergy Drop Tracker &nbsp;·&nbsp; ${exportDate}</div>
   </body></html>`;
@@ -240,7 +206,11 @@ export default function LogScreen() {
   const [viewMonth, setViewMonth] = useState(new Date().getMonth());
   const [notes, setNotes] = useState('');
   const [reaction, setReaction] = useState(false);
+  const [editStatus, setEditStatus] = useState(null);
+  const [editSet, setEditSet] = useState(null);
+  const [editDrops, setEditDrops] = useState(null);
   const [dirty, setDirty] = useState(false);
+  const [editMode, setEditMode] = useState(false);
   const [exporting, setExporting] = useState(false);
   const scrollRef = useRef(null);
 
@@ -252,11 +222,15 @@ export default function LogScreen() {
     const entry = d?.log?.[date];
     setNotes(entry?.notes || '');
     setReaction(entry?.reaction || false);
+    setEditStatus(entry?.status || null);
+    setEditSet(entry?.set ?? d?.currentSet ?? null);
+    setEditDrops(entry?.drops ?? (d?.currentSet === 5 ? d?.maintenanceDrops : Math.min(d?.currentWeek ?? 1, 3)));
     setDirty(false);
   }
 
   function selectDate(date) {
     setSelectedDate(date);
+    setEditMode(false);
     if (data) fillFields(data, date);
     scrollRef.current?.scrollTo({ y: 0, animated: true });
   }
@@ -275,16 +249,23 @@ export default function LogScreen() {
 
   async function saveEntry() {
     const existing = data?.log?.[selectedDate] || {};
+    const resolvedStatus = editStatus || existing.status || 'manual';
+    const resolvedSet = editSet ?? existing.set ?? data.currentSet;
+    const resolvedDrops = editDrops ?? existing.drops ?? Math.min(data.currentWeek, 3);
+    // Infer week: MD always week 1 if changing to MD; otherwise keep existing or use drops as proxy
+    const resolvedWeek = resolvedSet === 5
+      ? (existing.set === 5 ? existing.week : 1)
+      : existing.week || resolvedDrops;
     const updated = {
       ...data,
       log: {
         ...data.log,
         [selectedDate]: {
-          status: existing.status || 'manual',
-          set: existing.set || data.currentSet,
-          week: existing.week || data.currentWeek,
-          drops: existing.drops || data.currentWeek,
           ...existing,
+          status: resolvedStatus,
+          set: resolvedSet,
+          week: resolvedWeek,
+          drops: resolvedDrops,
           notes,
           reaction,
         },
@@ -293,13 +274,15 @@ export default function LogScreen() {
     setData(updated);
     await saveData(updated);
     setDirty(false);
+    setEditMode(false);
   }
 
   async function exportPDF() {
     try {
       setExporting(true);
       const html = buildPDFHtml(data);
-      const { uri } = await Print.printToFileAsync({ html, base64: false });
+      const filename = buildPDFFilename(data).replace('.pdf', '');
+      const { uri } = await Print.printToFileAsync({ html, base64: false, filename });
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
         await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Export Dose Log' });
@@ -321,52 +304,123 @@ export default function LogScreen() {
 
   const today = todayKey();
   const entry = data.log?.[selectedDate];
+  const hasMinusOne = Object.values(data.log || {}).some(e => e.set === -1);
+  const availableSets = [...(hasMinusOne ? [-1] : []), 1, 2, 3, 4, 5];
 
   return (
     <ScrollView ref={scrollRef} style={s.root} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
 
       {/* ── DAY CARD ── */}
       <View style={s.card}>
-        <Text style={s.cardDateLabel}>{formatDisplayDate(selectedDate)}</Text>
-
-        {/* Status badge */}
-        {entry && (
-          <View style={s.statusBadge}>
-            <Text style={[s.statusBadgeText, { color: entry.status === 'taken' ? COLOR.taken : entry.status === 'skipped' ? COLOR.skipped : COLOR.empty }]}>
-              {entry.status === 'taken' ? '✓ Taken' : entry.status === 'skipped' ? '✗ Skipped' : '— Manual'}
-            </Text>
-            {entry.set && (
-              <Text style={s.statusMeta}>Set {entry.set}  ·  {entry.drops} drop{entry.drops !== 1 ? 's' : ''}</Text>
-            )}
-          </View>
-        )}
-        {!entry && (
-          <Text style={[s.statusBadgeText, { color: COLOR.empty }]}>No entry — tap fields below to add</Text>
-        )}
-
-        {/* Notes */}
-        <Text style={s.fieldLabel}>Notes</Text>
-        <TextInput
-          style={s.input}
-          placeholder="Add notes for this day..."
-          placeholderTextColor="#999"
-          value={notes}
-          onChangeText={v => { setNotes(v); setDirty(true); }}
-          multiline numberOfLines={3} textAlignVertical="top"
-        />
-
-        {/* Reaction */}
-        <View style={s.switchRow}>
-          <Text style={s.switchLabel}>Adverse reaction?</Text>
-          <Switch value={reaction}
-            onValueChange={v => { setReaction(v); setDirty(true); }}
-            trackColor={{ true: '#b45309', false: '#ccc' }}
-            thumbColor={reaction ? '#fff' : '#fff'} />
+        <View style={s.cardHeader}>
+          <Text style={s.cardDateLabel}>{formatDisplayDate(selectedDate)}</Text>
+          <TouchableOpacity onPress={() => setEditMode(m => !m)} style={s.editToggle}>
+            <Ionicons name={editMode ? 'close-outline' : 'create-outline'} size={22} color={editMode ? '#999' : COLOR.blue} />
+          </TouchableOpacity>
         </View>
 
-        <TouchableOpacity style={[s.saveBtn, !dirty && s.saveBtnOff]} onPress={saveEntry} disabled={!dirty}>
-          <Text style={s.saveBtnText}>{dirty ? 'Save' : 'Saved'}</Text>
-        </TouchableOpacity>
+        {/* ── READ MODE ── */}
+        {!editMode && (
+          <>
+            {entry ? (
+              <>
+                <Text style={[s.statusBadgeText, { color: entry.status === 'taken' ? COLOR.taken : entry.status === 'skipped' ? COLOR.skipped : COLOR.empty }]}>
+                  {entry.status === 'taken' ? '✓ Taken' : entry.status === 'skipped' ? '✗ Skipped' : '— Manual'}
+                </Text>
+                <Text style={s.statusMeta}>
+                  {entry.set === 5 ? 'MD' : `Set ${entry.set}`}  ·  {entry.drops} drop{entry.drops !== 1 ? 's' : ''}
+                </Text>
+                {entry.notes ? <Text style={s.readNotes}>{entry.notes}</Text> : null}
+                {entry.reaction && <Text style={s.readReaction}>⚠ Adverse reaction noted</Text>}
+              </>
+            ) : (
+              <Text style={s.readEmpty}>No entry — tap <Ionicons name="create-outline" size={14} color="#aaa" /> to add</Text>
+            )}
+          </>
+        )}
+
+        {/* ── EDIT MODE ── */}
+        {editMode && (
+          <>
+            {/* Status */}
+            <Text style={s.fieldLabel}>Status</Text>
+            <View style={s.statusRow}>
+              {['taken', 'skipped'].map(st => (
+                <TouchableOpacity
+                  key={st}
+                  style={[s.statusBtn, editStatus === st && { backgroundColor: st === 'taken' ? COLOR.taken : COLOR.skipped }]}
+                  onPress={() => { setEditStatus(st); setDirty(true); }}
+                >
+                  <Text style={[s.statusBtnText, editStatus === st && s.statusBtnTextActive]}>
+                    {st === 'taken' ? '✓ Taken' : '✗ Skipped'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Set selector */}
+            <Text style={s.fieldLabel}>Set</Text>
+            <View style={s.setRow}>
+              {availableSets.map(set => (
+                <TouchableOpacity
+                  key={set}
+                  style={[s.setChip, editSet === set && s.setChipActive]}
+                  onPress={() => {
+                    setEditSet(set);
+                    if (set === 5) setEditDrops(data.maintenanceDrops || 2);
+                    setDirty(true);
+                  }}
+                >
+                  <Text style={[s.setChipText, editSet === set && s.setChipTextActive]}>
+                    {set === 5 ? 'MD' : `S${set}`}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Drops stepper */}
+            <Text style={s.fieldLabel}>Drops</Text>
+            <View style={s.dropsStepper}>
+              <TouchableOpacity
+                style={s.stepBtn}
+                onPress={() => { setEditDrops(d => Math.max(1, (d ?? 1) - 1)); setDirty(true); }}
+              >
+                <Text style={s.stepBtnText}>−</Text>
+              </TouchableOpacity>
+              <Text style={s.stepsValue}>{editDrops ?? 1}</Text>
+              <TouchableOpacity
+                style={s.stepBtn}
+                onPress={() => { setEditDrops(d => Math.min(3, (d ?? 1) + 1)); setDirty(true); }}
+              >
+                <Text style={s.stepBtnText}>+</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Notes */}
+            <Text style={s.fieldLabel}>Notes</Text>
+            <TextInput
+              style={s.input}
+              placeholder="Add notes for this day..."
+              placeholderTextColor="#999"
+              value={notes}
+              onChangeText={v => { setNotes(v); setDirty(true); }}
+              multiline numberOfLines={3} textAlignVertical="top"
+            />
+
+            {/* Reaction */}
+            <View style={s.switchRow}>
+              <Text style={s.switchLabel}>Adverse reaction?</Text>
+              <Switch value={reaction}
+                onValueChange={v => { setReaction(v); setDirty(true); }}
+                trackColor={{ true: '#b45309', false: '#ccc' }}
+                thumbColor={reaction ? '#fff' : '#fff'} />
+            </View>
+
+            <TouchableOpacity style={[s.saveBtn, !dirty && s.saveBtnOff]} onPress={saveEntry} disabled={!dirty}>
+              <Text style={s.saveBtnText}>{dirty ? 'Save' : 'Saved'}</Text>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
 
       {/* ── CALENDAR ── */}
@@ -501,11 +555,31 @@ const s = StyleSheet.create({
     backgroundColor: '#fff', borderRadius: 16, padding: 18,
     elevation: 3, shadowColor: '#000', shadowOpacity: 0.07, shadowRadius: 8, shadowOffset: { width: 0, height: 2 },
   },
-  cardDateLabel: { fontSize: 16, fontWeight: '800', color: '#1a1a2e', marginBottom: 6 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  cardDateLabel: { fontSize: 16, fontWeight: '800', color: '#1a1a2e' },
+  editToggle: { padding: 4 },
 
-  statusBadge: { marginBottom: 12 },
   statusBadgeText: { fontSize: 18, fontWeight: '700' },
   statusMeta: { fontSize: 13, color: '#555', marginTop: 2 },
+  readNotes: { fontSize: 14, color: '#555', marginTop: 8, lineHeight: 20 },
+  readReaction: { fontSize: 13, color: '#b45309', fontWeight: '600', marginTop: 6 },
+  readEmpty: { fontSize: 14, color: '#aaa' },
+
+  statusRow: { flexDirection: 'row', gap: 8, marginBottom: 10, marginTop: 4 },
+  statusBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, borderWidth: 1.5, borderColor: '#dde4ff', alignItems: 'center' },
+  statusBtnText: { fontSize: 14, fontWeight: '700', color: '#555' },
+  statusBtnTextActive: { color: '#fff' },
+
+  setRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
+  setChip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1.5, borderColor: '#dde4ff', alignItems: 'center' },
+  setChipActive: { backgroundColor: COLOR.blue, borderColor: COLOR.blue },
+  setChipText: { fontSize: 13, fontWeight: '700', color: '#555' },
+  setChipTextActive: { color: '#fff' },
+
+  dropsStepper: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  stepBtn: { width: 36, height: 36, borderRadius: 8, borderWidth: 1.5, borderColor: '#dde4ff', alignItems: 'center', justifyContent: 'center' },
+  stepBtnText: { fontSize: 20, fontWeight: '700', color: COLOR.blue, lineHeight: 24 },
+  stepsValue: { fontSize: 22, fontWeight: '800', color: '#222', minWidth: 24, textAlign: 'center' },
 
   fieldLabel: { fontSize: 13, color: '#444', marginBottom: 6, marginTop: 10, fontWeight: '600' },
   input: {
